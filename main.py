@@ -1,16 +1,13 @@
 import sys
 
 import click
+import mimetypes
 import re
 import subprocess as sp
 
 from pathlib import Path
+from tqdm import tqdm
 
-
-# - ресайзнуть до 512 по одной из сторон (по большей)
-# - обрезать до трех секунд
-# - убрать звуковой поток
-# - откодировать в -c:v libvpx-vp9 -b:v 680K (главное чтобы не больше 256КБ итоговый видос)
 
 class RecipeCreator:
     BITRATE = '680K'
@@ -65,13 +62,18 @@ class Converter:
 
     @staticmethod
     def parse_resolution(s: str) -> (int, int):
+        print(s)
         return [int(x) for x in re.findall(r'(\d+)x(\d+)', s)[0]]
 
     def get_resolution(self):
         command = (f"{self.ffprobe}"
                    f" -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0"
                    f" {self.input_path}")
-        output = sp.run(command, shell=True, capture_output=True).stdout.decode('utf-8')
+        print(f'Command will be run:\n{command}')
+        result = sp.run(command, shell=True, capture_output=True)
+        if result.returncode != 0:
+            raise Exception(f"ffprobe returned nonzero return code:\n{result.stderr.decode('utf-8')}")
+        output = result.stdout.decode('utf-8')
         return self.parse_resolution(output)
 
     def convert(self, output_path: Path):
@@ -95,9 +97,13 @@ class Converter:
             print(result.stderr)
 
 
-def convert(ffmpeg: Path, ffprobe: Path, input: Path, output: Path):
-    converter = Converter(ffmpeg, ffprobe, input)
-    converter.convert(output)
+def generate_name(filename: str) -> str:
+    return filename.split('.')[0] + '.webm'
+
+
+def is_video(file: Path) -> bool:
+    guess = mimetypes.guess_type(file)[0]
+    return guess is not None and guess.startswith('video')
 
 
 @click.command()
@@ -105,7 +111,18 @@ def convert(ffmpeg: Path, ffprobe: Path, input: Path, output: Path):
 @click.option('--ffprobe', type=click.Path(path_type=Path), default=Path('ffprobe'))
 @click.option('--videos', type=click.Path(writable=True, path_type=Path), required=True)
 def convert_cli(ffmpeg: Path, ffprobe: Path, videos: Path):
-    convert(ffmpeg, ffprobe, Path('~/Desktop/src.MOV'), Path('test.webm'))
+    output_dir = videos.joinpath('converted')
+    output_dir.mkdir(exist_ok=True)
+
+    for file in tqdm(videos.iterdir()):
+        if not file.is_file():
+            continue
+        if not is_video(file):
+            print(f'{file} is not a video. Skipping')
+            continue
+
+        output_path = output_dir.joinpath(generate_name(file.name))
+        Converter(ffmpeg, ffprobe, file).convert(output_path)
 
 
 if __name__ == '__main__':
